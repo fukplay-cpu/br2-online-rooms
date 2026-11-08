@@ -89,6 +89,34 @@ export class Room {
       server.send(JSON.stringify({ type: "error", message: "ไม่พบห้องนี้" }));
     }
 
+    server.addEventListener("message", async event => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type !== "position") return;
+
+        const currentRoom = await this.state.storage.get("room");
+        if (!currentRoom || !Array.isArray(currentRoom.players)) return;
+
+        const playerId = String(data.playerId || "");
+        const isMember = currentRoom.players.some(player => player.id === playerId);
+        const x = Number(data.x);
+        const y = Number(data.y);
+        if (!isMember || !Number.isFinite(x) || !Number.isFinite(y)) return;
+
+        const position = {
+          type: "position",
+          playerId,
+          x: Math.max(0, Math.min(100, x)),
+          y: Math.max(0, Math.min(100, y)),
+          direction: data.direction === "left" ? "left" : "right",
+          updatedAt: Date.now()
+        };
+        this.broadcast(position);
+      } catch {
+        try { server.send(JSON.stringify({ type: "error", message: "รูปแบบข้อความไม่ถูกต้อง" })); } catch {}
+      }
+    });
+
     return new Response(null, { status: 101, webSocket: client });
   }
 
