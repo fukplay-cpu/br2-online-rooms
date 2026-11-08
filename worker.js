@@ -15,16 +15,16 @@ export class Room {
       return Response.json({ ok: true });
     }
 
-    if (url.pathname === "/ws") {
+    if (url.pathname === "/ws" || url.pathname.endsWith("/ws")) {
       return this.handleWebSocket(request);
     }
 
-    if (request.method === "GET" && url.pathname === "/state") {
+    if (request.method === "GET" && (url.pathname === "/state" || url.pathname.endsWith("/state"))) {
       const room = await this.state.storage.get("room");
       return Response.json(room || { status: "empty", players: [] });
     }
 
-    if (request.method === "POST" && url.pathname === "/join") {
+    if (request.method === "POST" && (url.pathname === "/join" || url.pathname.endsWith("/join"))) {
       const body = await request.json().catch(() => ({}));
       const name = String(body.name || "ผู้เล่น").trim().slice(0, 20) || "ผู้เล่น";
       const room = await this.state.storage.get("room");
@@ -49,7 +49,7 @@ export class Room {
       return Response.json({ playerId, room });
     }
 
-    if (request.method === "POST" && url.pathname === "/leave") {
+    if (request.method === "POST" && (url.pathname === "/leave" || url.pathname.endsWith("/leave"))) {
       const body = await request.json().catch(() => ({}));
       const room = await this.state.storage.get("room");
 
@@ -155,7 +155,7 @@ export default {
       const id = env.ROOMS.idFromName(match[1]);
       const stub = env.ROOMS.get(id);
       const subpath = match[2] || "/state";
-      const response = await stub.fetch("https://room.internal" + subpath, request);
+      const response = await stub.fetch(request);
 
       // A WebSocket upgrade response (101) must pass through unchanged.
       // Wrapping it in a new Response breaks the WebSocket handshake.
