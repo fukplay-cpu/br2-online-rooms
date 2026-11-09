@@ -15,16 +15,16 @@ export class Room {
       return Response.json({ ok: true });
     }
 
-    if (url.pathname === "/ws" || url.pathname.endsWith("/ws")) {
+    if (url.pathname === "/ws") {
       return this.handleWebSocket(request);
     }
 
-    if (request.method === "GET" && (url.pathname === "/state" || url.pathname.endsWith("/state"))) {
+    if (request.method === "GET" && url.pathname === "/state") {
       const room = await this.state.storage.get("room");
       return Response.json(room || { status: "empty", players: [] });
     }
 
-    if (request.method === "POST" && (url.pathname === "/join" || url.pathname.endsWith("/join"))) {
+    if (request.method === "POST" && url.pathname === "/join") {
       const body = await request.json().catch(() => ({}));
       const name = String(body.name || "ผู้เล่น").trim().slice(0, 20) || "ผู้เล่น";
       const room = await this.state.storage.get("room");
@@ -49,7 +49,7 @@ export class Room {
       return Response.json({ playerId, room });
     }
 
-    if (request.method === "POST" && (url.pathname === "/leave" || url.pathname.endsWith("/leave"))) {
+    if (request.method === "POST" && url.pathname === "/leave") {
       const body = await request.json().catch(() => ({}));
       const room = await this.state.storage.get("room");
 
@@ -82,40 +82,74 @@ export class Room {
     server.addEventListener("close", remove);
     server.addEventListener("error", remove);
 
+    server.addEventListener("message", async event => {
+      try {
+        const data = JSON.parse(event.data);
+
+        if (!data || typeof data !== "object") return;
+
+        const room = await this.state.storage.get("room");
+        if (!room || !Array.isArray(room.players)) return;
+
+        const playerId = String(data.playerId || "");
+        const isMember = room.players.some(p => p.id === playerId);
+
+        if (!isMember) return;
+
+        if (data.type === "position") {
+          const x = Number(data.x);
+          const y = Number(data.y);
+
+          if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+
+          this.broadcast({
+            type: "position",
+            playerId,
+            x: Math.max(0, Math.min(100, x)),
+            y: Math.max(0, Math.min(100, y)),
+            direction: String(data.direction || "")
+          });
+
+          return;
+        }
+
+        if (data.type === "input") {
+          const allowedButtons = new Set([
+            "up", "down", "left", "right",
+            "x", "y", "a", "b",
+            "l", "l2", "r", "r2",
+            "start", "select",
+            "l_x_minus", "l_x_plus",
+            "l_y_minus", "l_y_plus",
+            "r_x_minus", "r_x_plus",
+            "r_y_minus", "r_y_plus"
+          ]);
+
+          const button = String(data.button || "");
+          const action = String(data.action || "");
+
+          if (!allowedButtons.has(button)) return;
+          if (action !== "down" && action !== "up") return;
+
+          this.broadcast({
+            type: "input",
+            playerId,
+            button,
+            action
+          });
+        }
+      } catch (_) {
+        // Ignore invalid WebSocket messages.
+      }
+    });
+
     const room = await this.state.storage.get("room");
+
     if (room) {
       server.send(JSON.stringify({ type: "state", room }));
     } else {
       server.send(JSON.stringify({ type: "error", message: "ไม่พบห้องนี้" }));
     }
-
-    server.addEventListener("message", async event => {
-      try {
-        const data = JSON.parse(event.data);
-        if (data.type !== "position") return;
-
-        const currentRoom = await this.state.storage.get("room");
-        if (!currentRoom || !Array.isArray(currentRoom.players)) return;
-
-        const playerId = String(data.playerId || "");
-        const isMember = currentRoom.players.some(player => player.id === playerId);
-        const x = Number(data.x);
-        const y = Number(data.y);
-        if (!isMember || !Number.isFinite(x) || !Number.isFinite(y)) return;
-
-        const position = {
-          type: "position",
-          playerId,
-          x: Math.max(0, Math.min(100, x)),
-          y: Math.max(0, Math.min(100, y)),
-          direction: data.direction === "left" ? "left" : "right",
-          updatedAt: Date.now()
-        };
-        this.broadcast(position);
-      } catch {
-        try { server.send(JSON.stringify({ type: "error", message: "รูปแบบข้อความไม่ถูกต้อง" })); } catch {}
-      }
-    });
 
     return new Response(null, { status: 101, webSocket: client });
   }
@@ -179,14 +213,17 @@ export default {
     }
 
     const match = url.pathname.match(/^\/room\/([A-Z0-9]{6})(\/.*)?$/);
+
     if (match) {
       const id = env.ROOMS.idFromName(match[1]);
       const stub = env.ROOMS.get(id);
       const subpath = match[2] || "/state";
-      const response = await stub.fetch(request);
 
-      // A WebSocket upgrade response (101) must pass through unchanged.
-      // Wrapping it in a new Response breaks the WebSocket handshake.
+      const response = await stub.fetch(
+        "https://room.internal" + subpath,
+        request
+      );
+
       if (response.status === 101 || response.webSocket) {
         return response;
       }
@@ -216,9 +253,11 @@ function corsHeaders(request) {
 
 function withCors(response, request) {
   const headers = new Headers(response.headers);
+
   for (const [key, value] of Object.entries(corsHeaders(request))) {
     headers.set(key, value);
   }
+
   return new Response(response.body, {
     status: response.status,
     statusText: response.statusText,
