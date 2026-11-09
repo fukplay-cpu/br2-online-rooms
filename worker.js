@@ -24,12 +24,16 @@ export class Room {
       return Response.json(room || { status: "empty", players: [] });
     }
 
+    // START GAME
     if (request.method === "POST" && url.pathname === "/start") {
       const body = await request.json().catch(() => ({}));
       const room = await this.state.storage.get("room");
 
       if (!room) {
-        return Response.json({ error: "ไม่พบห้องนี้" }, { status: 404 });
+        return Response.json(
+          { error: "ไม่พบห้องนี้" },
+          { status: 404 }
+        );
       }
 
       if (!Array.isArray(room.players) || room.players.length !== 2) {
@@ -39,6 +43,7 @@ export class Room {
         );
       }
 
+      // เฉพาะเจ้าของห้อง P1 เท่านั้นที่เริ่มเกมได้
       if (!body.playerId || body.playerId !== room.players[0].id) {
         return Response.json(
           { error: "เฉพาะผู้สร้างห้อง (P1) เท่านั้นที่เริ่มเกมได้" },
@@ -47,23 +52,39 @@ export class Room {
       }
 
       const startedAt = Date.now() + 1800;
+
       room.status = "starting";
       room.startedAt = startedAt;
 
       await this.state.storage.put("room", room);
 
-      this.broadcast({ type: "start", room, startedAt });
+      this.broadcast({
+        type: "start",
+        room,
+        startedAt
+      });
 
-      return Response.json({ ok: true, startedAt, room });
+      return Response.json({
+        ok: true,
+        startedAt,
+        room
+      });
     }
 
+    // JOIN ROOM
     if (request.method === "POST" && url.pathname === "/join") {
       const body = await request.json().catch(() => ({}));
-      const name = String(body.name || "ผู้เล่น").trim().slice(0, 20) || "ผู้เล่น";
+      const name = String(body.name || "ผู้เล่น")
+        .trim()
+        .slice(0, 20) || "ผู้เล่น";
+
       const room = await this.state.storage.get("room");
 
       if (!room) {
-        return Response.json({ error: "ไม่พบห้องนี้" }, { status: 404 });
+        return Response.json(
+          { error: "ไม่พบห้องนี้" },
+          { status: 404 }
+        );
       }
 
       const playerId = body.playerId || crypto.randomUUID();
@@ -72,7 +93,10 @@ export class Room {
         room.players.length >= 2 &&
         !room.players.some(p => p.id === playerId)
       ) {
-        return Response.json({ error: "ห้องเต็มแล้ว" }, { status: 409 });
+        return Response.json(
+          { error: "ห้องเต็มแล้ว" },
+          { status: 409 }
+        );
       }
 
       if (!room.players.some(p => p.id === playerId)) {
@@ -86,21 +110,36 @@ export class Room {
       room.status = room.players.length === 2 ? "ready" : "waiting";
 
       await this.state.storage.put("room", room);
-      this.broadcast({ type: "state", room });
 
-      return Response.json({ playerId, room });
+      this.broadcast({
+        type: "state",
+        room
+      });
+
+      return Response.json({
+        playerId,
+        room
+      });
     }
 
+    // LEAVE ROOM
     if (request.method === "POST" && url.pathname === "/leave") {
       const body = await request.json().catch(() => ({}));
       const room = await this.state.storage.get("room");
 
       if (room) {
-        room.players = room.players.filter(p => p.id !== body.playerId);
+        room.players = room.players.filter(
+          p => p.id !== body.playerId
+        );
+
         room.status = room.players.length === 2 ? "ready" : "waiting";
 
         await this.state.storage.put("room", room);
-        this.broadcast({ type: "state", room });
+
+        this.broadcast({
+          type: "state",
+          room
+        });
       }
 
       return Response.json({ ok: true });
@@ -109,9 +148,15 @@ export class Room {
     return new Response("Not found", { status: 404 });
   }
 
+  // WEBSOCKET
   async handleWebSocket(request) {
-    if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
-      return new Response("Expected WebSocket upgrade", { status: 426 });
+    if (
+      request.headers.get("Upgrade")?.toLowerCase() !== "websocket"
+    ) {
+      return new Response(
+        "Expected WebSocket upgrade",
+        { status: 426 }
+      );
     }
 
     const pair = new WebSocketPair();
@@ -129,6 +174,7 @@ export class Room {
     server.addEventListener("close", remove);
     server.addEventListener("error", remove);
 
+    // รับคำสั่งควบคุมจากผู้เล่น
     server.addEventListener("message", async event => {
       let data;
 
@@ -159,7 +205,10 @@ export class Room {
       const allowed =
         /^(up|down|left|right|x|y|a|b|l|r|l2|r2|start|select|l_[xy]_(minus|plus)|r_[xy]_(minus|plus))$/;
 
-      if (!allowed.test(button) || typeof data.pressed !== "boolean") {
+      if (
+        !allowed.test(button) ||
+        typeof data.pressed !== "boolean"
+      ) {
         return;
       }
 
@@ -174,7 +223,10 @@ export class Room {
     const room = await this.state.storage.get("room");
 
     if (room) {
-      server.send(JSON.stringify({ type: "state", room }));
+      server.send(JSON.stringify({
+        type: "state",
+        room
+      }));
     } else {
       server.send(JSON.stringify({
         type: "error",
@@ -188,6 +240,7 @@ export class Room {
     });
   }
 
+  // BROADCAST
   broadcast(data) {
     const message = JSON.stringify(data);
 
@@ -201,6 +254,7 @@ export class Room {
   }
 }
 
+// JSON RESPONSE
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
@@ -210,6 +264,7 @@ function json(data, status = 200) {
   });
 }
 
+// MAIN WORKER
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -220,21 +275,27 @@ export default {
       });
     }
 
+    // HEALTH CHECK
     if (url.pathname === "/health") {
       return withCors(
-        json({ ok: true, service: "BR2 online rooms" }),
+        json({
+          ok: true,
+          service: "BR2 online rooms"
+        }),
         request
       );
     }
 
+    // CREATE ROOM
     if (request.method === "POST" && url.pathname === "/create") {
       const body = await request.json().catch(() => ({}));
 
-      const name =
-        String(body.name || "ผู้เล่น 1").trim().slice(0, 20) ||
-        "ผู้เล่น 1";
+      const name = String(body.name || "ผู้เล่น 1")
+        .trim()
+        .slice(0, 20) || "ผู้เล่น 1";
 
       const code = randomCode();
+
       const id = env.ROOMS.idFromName(code);
       const stub = env.ROOMS.get(id);
 
@@ -257,18 +318,17 @@ export default {
         body: JSON.stringify(room)
       });
 
-      return withCors(
-        await (async () => {
-          const stored = await stub.fetch(
-            "https://room.internal/state"
-          );
+      const stored = await stub.fetch(
+        "https://room.internal/state"
+      );
 
-          return json({ room: await stored.json() });
-        })(),
+      return withCors(
+        json({ room: await stored.json() }),
         request
       );
     }
 
+    // ROOM ROUTES
     const match = url.pathname.match(
       /^\/room\/([A-Z0-9]{6})(\/.*)?$/
     );
@@ -283,6 +343,7 @@ export default {
         request
       );
 
+      // WebSocket ต้องส่ง response กลับโดยไม่ห่อใหม่
       if (response.status === 101 || response.webSocket) {
         return response;
       }
@@ -290,13 +351,20 @@ export default {
       return withCors(response, request);
     }
 
-    return withCors(json({ error: "Not found" }, 404), request);
+    return withCors(
+      json({ error: "Not found" }, 404),
+      request
+    );
   }
 };
 
+// RANDOM ROOM CODE
 function randomCode() {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-  const bytes = crypto.getRandomValues(new Uint8Array(6));
+
+  const bytes = crypto.getRandomValues(
+    new Uint8Array(6)
+  );
 
   return Array.from(
     bytes,
@@ -304,21 +372,33 @@ function randomCode() {
   ).join("");
 }
 
+// CORS
 function corsHeaders(request) {
   return {
     "access-control-allow-origin":
       request.headers.get("Origin") || "*",
-    "access-control-allow-methods": "GET,POST,OPTIONS",
-    "access-control-allow-headers": "Content-Type",
-    "access-control-max-age": "86400",
-    "vary": "Origin"
+
+    "access-control-allow-methods":
+      "GET,POST,OPTIONS",
+
+    "access-control-allow-headers":
+      "Content-Type",
+
+    "access-control-max-age":
+      "86400",
+
+    "vary":
+      "Origin"
   };
 }
 
+// APPLY CORS
 function withCors(response, request) {
   const headers = new Headers(response.headers);
 
-  for (const [key, value] of Object.entries(corsHeaders(request))) {
+  for (const [key, value] of Object.entries(
+    corsHeaders(request)
+  )) {
     headers.set(key, value);
   }
 
