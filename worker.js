@@ -23,7 +23,45 @@ export class Room {
       const room = await this.state.storage.get("room");
       return Response.json(room || { status: "empty", players: [] });
     }
+    if (request.method === "POST" && url.pathname === "/start") {
+  const body = await request.json().catch(() => ({}));
+  const room = await this.state.storage.get("room");
 
+  if (!room) {
+    return Response.json({ error: "ไม่พบห้องนี้" }, { status: 404 });
+  }
+
+  if (!Array.isArray(room.players) || room.players.length !== 2) {
+    return Response.json({
+      error: "ต้องมีผู้เล่นครบ 2 คนก่อนเริ่มเกม"
+    }, { status: 409 });
+  }
+
+  if (!body.playerId || body.playerId !== room.players[0].id) {
+    return Response.json({
+      error: "เฉพาะผู้สร้างห้อง (P1) เท่านั้นที่เริ่มเกมได้"
+    }, { status: 403 });
+  }
+
+  const startedAt = Date.now() + 1800;
+
+  room.status = "starting";
+  room.startedAt = startedAt;
+
+  await this.state.storage.put("room", room);
+
+  this.broadcast({
+    type: "start",
+    room,
+    startedAt
+  });
+
+  return Response.json({
+    ok: true,
+    startedAt,
+    room
+  });
+}
     // START GAME
     if (request.method === "POST" && url.pathname === "/start") {
       const body = await request.json().catch(() => ({}));
