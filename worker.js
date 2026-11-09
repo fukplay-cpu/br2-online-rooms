@@ -12,7 +12,7 @@ export class Room {
       const room = await request.json();
       await this.state.storage.put("room", room);
       this.broadcast({ type: "state", room });
-      return Response.json({ ok: true });
+      return json({ ok: true });
     }
 
     if (url.pathname === "/ws") {
@@ -21,7 +21,7 @@ export class Room {
 
     if (request.method === "GET" && url.pathname === "/state") {
       const room = await this.state.storage.get("room");
-      return Response.json(room || { status: "empty", players: [] });
+      return json(room || { status: "empty", players: [] });
     }
 
     if (request.method === "POST" && url.pathname === "/start") {
@@ -29,41 +29,50 @@ export class Room {
       const room = await this.state.storage.get("room");
 
       if (!room) {
-        return Response.json({ error: "ไม่พบห้องนี้" }, { status: 404 });
+        return json({ error: "ไม่พบห้อง" }, 404);
       }
 
       if (!Array.isArray(room.players) || room.players.length !== 2) {
-        return Response.json(
-          { error: "ต้องมีผู้เล่นครบ 2 คนก่อนเริ่มเกม" },
-          { status: 409 }
-        );
+        return json({ error: "ผู้เล่นยังไม่ครบ 2 คน" }, 409);
       }
 
-      if (!body.playerId || body.playerId !== room.players[0].id) {
-        return Response.json(
-          { error: "เฉพาะผู้สร้างห้องเท่านั้นที่เริ่มเกมได้" },
-          { status: 403 }
-        );
+      // ผู้สร้างห้องเท่านั้นที่เริ่มเกมได้
+      if (body.playerId !== room.players[0].id) {
+        return json({ error: "เฉพาะ P1 เท่านั้นที่เริ่มเกมได้" }, 403);
       }
 
-      const startedAt = Date.now() + 1800;
+      const startedAt = Date.now() + 2500;
+
       room.status = "starting";
       room.startedAt = startedAt;
 
       await this.state.storage.put("room", room);
-      this.broadcast({ type: "start", room, startedAt });
 
-      return Response.json({ ok: true, startedAt, room });
+      this.broadcast({
+        type: "start",
+        room,
+        startedAt,
+        stateUrl: "/game-state"
+      });
+
+      return json({
+        ok: true,
+        startedAt,
+        room
+      });
     }
 
     if (request.method === "POST" && url.pathname === "/join") {
       const body = await request.json().catch(() => ({}));
-      const name = String(body.name || "ผู้เล่น").trim().slice(0, 20) || "ผู้เล่น";
       const room = await this.state.storage.get("room");
 
       if (!room) {
-        return Response.json({ error: "ไม่พบห้องนี้" }, { status: 404 });
+        return json({ error: "ไม่พบห้อง" }, 404);
       }
+
+      const name = String(body.name || "ผู้เล่น")
+        .trim()
+        .slice(0, 20);
 
       const playerId = body.playerId || crypto.randomUUID();
 
@@ -71,7 +80,7 @@ export class Room {
         room.players.length >= 2 &&
         !room.players.some(p => p.id === playerId)
       ) {
-        return Response.json({ error: "ห้องเต็มแล้ว" }, { status: 409 });
+        return json({ error: "ห้องเต็มแล้ว" }, 409);
       }
 
       if (!room.players.some(p => p.id === playerId)) {
@@ -85,9 +94,10 @@ export class Room {
       room.status = room.players.length === 2 ? "ready" : "waiting";
 
       await this.state.storage.put("room", room);
+
       this.broadcast({ type: "state", room });
 
-      return Response.json({ playerId, room });
+      return json({ playerId, room });
     }
 
     if (request.method === "POST" && url.pathname === "/leave") {
@@ -95,22 +105,31 @@ export class Room {
       const room = await this.state.storage.get("room");
 
       if (room) {
-        room.players = room.players.filter(p => p.id !== body.playerId);
-        room.status = room.players.length === 2 ? "ready" : "waiting";
+        room.players = room.players.filter(
+          p => p.id !== body.playerId
+        );
+
+        room.status = room.players.length === 2
+          ? "ready"
+          : "waiting";
 
         await this.state.storage.put("room", room);
         this.broadcast({ type: "state", room });
       }
 
-      return Response.json({ ok: true });
+      return json({ ok: true });
     }
 
-    return new Response("Not found", { status: 404 });
+    return json({ error: "Not found" }, 404);
   }
 
   async handleWebSocket(request) {
-    if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
-      return new Response("Expected WebSocket upgrade", { status: 426 });
+    if (
+      request.headers.get("Upgrade")?.toLowerCase() !== "websocket"
+    ) {
+      return new Response("Expected WebSocket upgrade", {
+        status: 426
+      });
     }
 
     const pair = new WebSocketPair();
@@ -141,12 +160,11 @@ export class Room {
 
       if (!data || data.type !== "input") return;
 
-      const roomNow = await this.state.storage.get("room");
+      const room = await this.state.storage.get("room");
 
       if (
-        !roomNow ||
-        !Array.isArray(roomNow.players) ||
-        !roomNow.players.some(p => p.id === socketPlayerId)
+        !room ||
+        !room.players.some(p => p.id === socketPlayerId)
       ) {
         return;
       }
@@ -158,8 +176,12 @@ export class Room {
       const allowed =
         /^(up|down|left|right|x|y|a|b|l|r|l2|r2|start|select|l_[xy]_(minus|plus)|r_[xy]_(minus|plus))$/;
 
-      if (!allowed.test(button)) return;
-      if (typeof data.pressed !== "boolean") return;
+      if (
+        !allowed.test(button) ||
+        typeof data.pressed !== "boolean"
+      ) {
+        return;
+      }
 
       this.broadcast({
         type: "input",
@@ -171,14 +193,10 @@ export class Room {
 
     const room = await this.state.storage.get("room");
 
-    if (room) {
-      server.send(JSON.stringify({ type: "state", room }));
-    } else {
-      server.send(JSON.stringify({
-        type: "error",
-        message: "ไม่พบห้องนี้"
-      }));
-    }
+    server.send(JSON.stringify({
+      type: "state",
+      room: room || { status: "empty", players: [] }
+    }));
 
     return new Response(null, {
       status: 101,
@@ -220,17 +238,84 @@ export default {
 
     if (url.pathname === "/health") {
       return withCors(
-        json({ ok: true, service: "BR2 online rooms" }),
+        json({
+          ok: true,
+          service: "BR2 online rooms",
+          gameSaves: !!env.GAME_SAVES
+        }),
         request
       );
     }
 
-    if (request.method === "POST" && url.pathname === "/create") {
+    // โหลดจุดเซฟจาก R2
+    if (
+      request.method === "GET" &&
+      url.pathname === "/game-state"
+    ) {
+      if (!env.GAME_SAVES) {
+        return withCors(
+          json({ error: "Missing GAME_SAVES binding" }, 500),
+          request
+        );
+      }
+
+      const key =
+        "br2-Bloody_Roar_2_-_Bringer_of_the_New_Age__Europe_.state";
+
+      const object = await env.GAME_SAVES.get(key);
+
+      if (!object) {
+        return withCors(
+          json({
+            error: "ไม่พบไฟล์จุดเซฟใน R2",
+            key
+          }, 404),
+          request
+        );
+      }
+
+      const headers = new Headers();
+
+      object.writeHttpMetadata(headers);
+
+      headers.set(
+        "content-type",
+        "application/octet-stream"
+      );
+
+      headers.set(
+        "content-disposition",
+        'attachment; filename="Bloody_Roar_2.state"'
+      );
+
+      headers.set("cache-control", "no-store");
+
+      if (object.httpEtag) {
+        headers.set("etag", object.httpEtag);
+      }
+
+      return withCors(
+        new Response(object.body, {
+          status: 200,
+          headers
+        }),
+        request
+      );
+    }
+
+    // สร้างห้อง
+    if (
+      request.method === "POST" &&
+      url.pathname === "/create"
+    ) {
       const body = await request.json().catch(() => ({}));
-      const name =
-        String(body.name || "ผู้เล่น 1").trim().slice(0, 20) || "ผู้เล่น 1";
+
+      const name = String(body.name || "ผู้เล่น 1")
+        .trim()
+        .slice(0, 20);
 
       const code = randomCode();
+
       const id = env.ROOMS.idFromName(code);
       const stub = env.ROOMS.get(id);
 
@@ -247,11 +332,15 @@ export default {
 
       await stub.fetch("https://room.internal/init", {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: {
+          "content-type": "application/json"
+        },
         body: JSON.stringify(room)
       });
 
-      const stored = await stub.fetch("https://room.internal/state");
+      const stored = await stub.fetch(
+        "https://room.internal/state"
+      );
 
       return withCors(
         json({ room: await stored.json() }),
@@ -259,6 +348,7 @@ export default {
       );
     }
 
+    // จัดการห้อง
     const match = url.pathname.match(
       /^\/room\/([A-Z0-9]{6})(\/.*)?$/
     );
@@ -280,7 +370,10 @@ export default {
       return withCors(response, request);
     }
 
-    return withCors(json({ error: "Not found" }, 404), request);
+    return withCors(
+      json({ error: "Not found" }, 404),
+      request
+    );
   }
 };
 
@@ -298,9 +391,15 @@ function corsHeaders(request) {
   return {
     "access-control-allow-origin":
       request.headers.get("Origin") || "*",
-    "access-control-allow-methods": "GET,POST,OPTIONS",
-    "access-control-allow-headers": "Content-Type",
+
+    "access-control-allow-methods":
+      "GET,POST,OPTIONS",
+
+    "access-control-allow-headers":
+      "Content-Type",
+
     "access-control-max-age": "86400",
+
     "vary": "Origin"
   };
 }
@@ -308,7 +407,9 @@ function corsHeaders(request) {
 function withCors(response, request) {
   const headers = new Headers(response.headers);
 
-  for (const [key, value] of Object.entries(corsHeaders(request))) {
+  for (const [key, value] of Object.entries(
+    corsHeaders(request)
+  )) {
     headers.set(key, value);
   }
 
