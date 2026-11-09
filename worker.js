@@ -8,7 +8,6 @@ export class Room {
   async fetch(request) {
     const url = new URL(request.url);
 
-    // INITIALIZE ROOM
     if (request.method === "POST" && url.pathname === "/init") {
       const room = await request.json();
       await this.state.storage.put("room", room);
@@ -16,42 +15,55 @@ export class Room {
       return Response.json({ ok: true });
     }
 
-    // WEBSOCKET
     if (url.pathname === "/ws") {
       return this.handleWebSocket(request);
     }
 
-    // ROOM STATE
     if (request.method === "GET" && url.pathname === "/state") {
       const room = await this.state.storage.get("room");
-
-      return Response.json(room || {
-        status: "empty",
-        players: []
-      });
+      return Response.json(room || { status: "empty", players: [] });
     }
 
-    // JOIN ROOM
-    if (request.method === "POST" && url.pathname === "/join") {
+    if (request.method === "POST" && url.pathname === "/start") {
       const body = await request.json().catch(() => ({}));
-
-      const name = String(body.name || "ผู้เล่น")
-        .trim().slice(0, 20) || "ผู้เล่น";
-
       const room = await this.state.storage.get("room");
 
       if (!room) {
+        return Response.json({ error: "ไม่พบห้องนี้" }, { status: 404 });
+      }
+
+      if (!Array.isArray(room.players) || room.players.length !== 2) {
         return Response.json(
-          { error: "ไม่พบห้องนี้" },
-          { status: 404 }
+          { error: "ต้องมีผู้เล่นครบ 2 คนก่อนเริ่มเกม" },
+          { status: 409 }
         );
       }
 
-      if (room.startedAt) {
+      if (!body.playerId || body.playerId !== room.players[0].id) {
         return Response.json(
-          { error: "เกมเริ่มแล้ว ไม่สามารถเข้าร่วมได้" },
-          { status: 409 }
+          { error: "เฉพาะผู้สร้างห้อง (P1) เท่านั้นที่เริ่มเกมได้" },
+          { status: 403 }
         );
+      }
+
+      const startedAt = Date.now() + 1800;
+      room.status = "starting";
+      room.startedAt = startedAt;
+
+      await this.state.storage.put("room", room);
+
+      this.broadcast({ type: "start", room, startedAt });
+
+      return Response.json({ ok: true, startedAt, room });
+    }
+
+    if (request.method === "POST" && url.pathname === "/join") {
+      const body = await request.json().catch(() => ({}));
+      const name = String(body.name || "ผู้เล่น").trim().slice(0, 20) || "ผู้เล่น";
+      const room = await this.state.storage.get("room");
+
+      if (!room) {
+        return Response.json({ error: "ไม่พบห้องนี้" }, { status: 404 });
       }
 
       const playerId = body.playerId || crypto.randomUUID();
@@ -60,10 +72,7 @@ export class Room {
         room.players.length >= 2 &&
         !room.players.some(p => p.id === playerId)
       ) {
-        return Response.json(
-          { error: "ห้องเต็มแล้ว" },
-          { status: 409 }
-        );
+        return Response.json({ error: "ห้องเต็มแล้ว" }, { status: 409 });
       }
 
       if (!room.players.some(p => p.id === playerId)) {
@@ -74,9 +83,7 @@ export class Room {
         });
       }
 
-      room.status = room.players.length === 2
-        ? "ready"
-        : "waiting";
+      room.status = room.players.length === 2 ? "ready" : "waiting";
 
       await this.state.storage.put("room", room);
       this.broadcast({ type: "state", room });
@@ -84,78 +91,13 @@ export class Room {
       return Response.json({ playerId, room });
     }
 
-    // START ONLINE GAME
-    if (request.method === "POST" && url.pathname === "/start") {
-      const body = await request.json().catch(() => ({}));
-      const room = await this.state.storage.get("room");
-
-      if (!room) {
-        return Response.json(
-          { error: "ไม่พบห้องนี้" },
-          { status: 404 }
-        );
-      }
-
-      const playerId = String(body.playerId || "");
-
-      if (!room.players.some(p => p.id === playerId)) {
-        return Response.json(
-          { error: "ไม่พบผู้เล่นในห้อง" },
-          { status: 403 }
-        );
-      }
-
-      if (room.players.length !== 2 || room.status !== "ready") {
-        return Response.json(
-          { error: "ต้องมีผู้เล่นครบ 2 คนก่อนเริ่มเกม" },
-          { status: 409 }
-        );
-      }
-
-      // Prevent duplicate start
-      if (room.startedAt) {
-        return Response.json({
-          ok: true,
-          alreadyStarted: true,
-          startedAt: room.startedAt
-        });
-      }
-
-      const startedAt = Date.now() + 3000;
-
-      room.status = "starting";
-      room.startedAt = startedAt;
-
-      await this.state.storage.put("room", room);
-
-      // Notify both players
-      this.broadcast({
-        type: "start",
-        room,
-        startedAt
-      });
-
-      return Response.json({
-        ok: true,
-        startedAt
-      });
-    }
-
-    // LEAVE ROOM
     if (request.method === "POST" && url.pathname === "/leave") {
       const body = await request.json().catch(() => ({}));
       const room = await this.state.storage.get("room");
 
       if (room) {
-        room.players = room.players.filter(
-          p => p.id !== body.playerId
-        );
-
-        room.status = room.players.length === 2
-          ? "ready"
-          : "waiting";
-
-        room.startedAt = null;
+        room.players = room.players.filter(p => p.id !== body.playerId);
+        room.status = room.players.length === 2 ? "ready" : "waiting";
 
         await this.state.storage.put("room", room);
         this.broadcast({ type: "state", room });
@@ -168,14 +110,8 @@ export class Room {
   }
 
   async handleWebSocket(request) {
-    if (
-      request.headers.get("Upgrade")?.toLowerCase()
-      !== "websocket"
-    ) {
-      return new Response(
-        "Expected WebSocket upgrade",
-        { status: 426 }
-      );
+    if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
+      return new Response("Expected WebSocket upgrade", { status: 426 });
     }
 
     const pair = new WebSocketPair();
@@ -185,22 +121,60 @@ export class Room {
     server.accept();
     this.sockets.add(server);
 
+    const socketPlayerId =
+      new URL(request.url).searchParams.get("playerId") || "";
+
     const remove = () => this.sockets.delete(server);
 
     server.addEventListener("close", remove);
     server.addEventListener("error", remove);
 
-    server.addEventListener("message", event => {
-      this.handleSocketMessage(server, event.data);
+    server.addEventListener("message", async event => {
+      let data;
+
+      try {
+        data = JSON.parse(
+          typeof event.data === "string" ? event.data : ""
+        );
+      } catch {
+        return;
+      }
+
+      if (!data || data.type !== "input") return;
+
+      const roomNow = await this.state.storage.get("room");
+
+      if (
+        !roomNow ||
+        !Array.isArray(roomNow.players) ||
+        !roomNow.players.some(p => p.id === socketPlayerId)
+      ) {
+        return;
+      }
+
+      if (data.playerId !== socketPlayerId) return;
+
+      const button = String(data.button || "");
+
+      const allowed =
+        /^(up|down|left|right|x|y|a|b|l|r|l2|r2|start|select|l_[xy]_(minus|plus)|r_[xy]_(minus|plus))$/;
+
+      if (!allowed.test(button) || typeof data.pressed !== "boolean") {
+        return;
+      }
+
+      this.broadcast({
+        type: "input",
+        playerId: socketPlayerId,
+        button,
+        pressed: data.pressed
+      });
     });
 
     const room = await this.state.storage.get("room");
 
     if (room) {
-      server.send(JSON.stringify({
-        type: "state",
-        room
-      }));
+      server.send(JSON.stringify({ type: "state", room }));
     } else {
       server.send(JSON.stringify({
         type: "error",
@@ -214,95 +188,13 @@ export class Room {
     });
   }
 
-  async handleSocketMessage(socket, raw) {
-    try {
-      const messageText = typeof raw === "string"
-        ? raw
-        : new TextDecoder().decode(raw);
-
-      if (messageText.length > 2048) return;
-
-      const data = JSON.parse(messageText);
-      const room = await this.state.storage.get("room");
-
-      if (!room) return;
-
-      const playerId = String(data.playerId || "");
-
-      if (!room.players.some(p => p.id === playerId)) {
-        socket.send(JSON.stringify({
-          type: "error",
-          message: "ไม่พบผู้เล่นในห้อง"
-        }));
-        return;
-      }
-
-      // INPUT SYNC
-      if (data.type === "input") {
-        const button = String(data.button || "").toLowerCase();
-        const action = String(data.action || "");
-
-        if (
-          !/^[a-z0-9_]{1,24}$/.test(button) ||
-          !["down", "up"].includes(action)
-        ) {
-          return;
-        }
-
-        this.broadcast({
-          type: "input",
-          playerId,
-          button,
-          action,
-          sentAt: Date.now()
-        });
-
-        return;
-      }
-
-      // POSITION SYNC
-      if (data.type === "position") {
-        const x = Number(data.x);
-        const y = Number(data.y);
-
-        if (
-          !Number.isFinite(x) ||
-          !Number.isFinite(y) ||
-          x < 0 || x > 100 ||
-          y < 0 || y > 100
-        ) {
-          return;
-        }
-
-        this.broadcast({
-          type: "position",
-          playerId,
-          x,
-          y,
-          direction: data.direction || "right",
-          sentAt: Date.now()
-        });
-
-        return;
-      }
-
-    } catch (error) {
-      try {
-        socket.send(JSON.stringify({
-          type: "error",
-          message: "ข้อมูลไม่ถูกต้อง"
-        }));
-      } catch (_) {}
-    }
-  }
-
   broadcast(data) {
     const message = JSON.stringify(data);
 
     for (const ws of this.sockets) {
       try {
         ws.send(message);
-      } catch (_) {
+      } catch {
         this.sockets.delete(ws);
       }
     }
@@ -328,30 +220,21 @@ export default {
       });
     }
 
-    // HEALTH CHECK
     if (url.pathname === "/health") {
       return withCors(
-        json({
-          ok: true,
-          service: "BR2 online rooms",
-          version: "2.0"
-        }),
+        json({ ok: true, service: "BR2 online rooms" }),
         request
       );
     }
 
-    // CREATE ROOM
-    if (
-      request.method === "POST" &&
-      url.pathname === "/create"
-    ) {
+    if (request.method === "POST" && url.pathname === "/create") {
       const body = await request.json().catch(() => ({}));
 
-      const name = String(body.name || "ผู้เล่น 1")
-        .trim().slice(0, 20) || "ผู้เล่น 1";
+      const name =
+        String(body.name || "ผู้เล่น 1").trim().slice(0, 20) ||
+        "ผู้เล่น 1";
 
       const code = randomCode();
-
       const id = env.ROOMS.idFromName(code);
       const stub = env.ROOMS.get(id);
 
@@ -363,8 +246,7 @@ export default {
           name,
           joinedAt: Date.now()
         }],
-        createdAt: Date.now(),
-        startedAt: null
+        createdAt: Date.now()
       };
 
       await stub.fetch("https://room.internal/init", {
@@ -375,17 +257,18 @@ export default {
         body: JSON.stringify(room)
       });
 
-      const stored = await stub.fetch(
-        "https://room.internal/state"
-      );
-
       return withCors(
-        json({ room: await stored.json() }),
+        await (async () => {
+          const stored = await stub.fetch(
+            "https://room.internal/state"
+          );
+
+          return json({ room: await stored.json() });
+        })(),
         request
       );
     }
 
-    // ROOM ROUTER
     const match = url.pathname.match(
       /^\/room\/([A-Z0-9]{6})(\/.*)?$/
     );
@@ -407,10 +290,7 @@ export default {
       return withCors(response, request);
     }
 
-    return withCors(
-      json({ error: "Not found" }, 404),
-      request
-    );
+    return withCors(json({ error: "Not found" }, 404), request);
   }
 };
 
@@ -438,9 +318,7 @@ function corsHeaders(request) {
 function withCors(response, request) {
   const headers = new Headers(response.headers);
 
-  for (const [key, value] of Object.entries(
-    corsHeaders(request)
-  )) {
+  for (const [key, value] of Object.entries(corsHeaders(request))) {
     headers.set(key, value);
   }
 
